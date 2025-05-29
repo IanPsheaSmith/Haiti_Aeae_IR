@@ -1,0 +1,563 @@
+---
+title: "Haiti_Aeae_IR"
+author: "Ian Pshea-Smith"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r Load in Libraries}
+  
+  library(readr)        # For reading in data
+  library(dplyr)        # For data configuration
+  library(tidyr)        # For data configuration
+  library(stringr)      # For data configuration
+  library(lubridate)    # For data configuration
+  library(scales)       # For formatting percentages
+  library(ggplot2)      # For creating plots/figures
+  library(sf)           # For mapping
+
+```
+
+
+
+```{r Import the Data from github}
+
+  # ── Load CSV data directly from GitHub ──
+    csv_url <- "https://raw.githubusercontent.com/IanPsheaSmith/Haiti_Aeae_IR/main/Haiti_IR.csv"
+    Haiti_IR <- read_csv(csv_url) # Main data
+
+    
+  # ── Load shapefile data directly from GitHub ──    
+    zip_url <- "https://github.com/IanPsheaSmith/Haiti_Aeae_IR/raw/main/Shapefiles/Haiti_Shapefiles.zip"
+    zip_dest <- tempfile(fileext = ".zip")
+    unzip_dir <- tempfile()
+    
+    download.file(zip_url, destfile = zip_dest, mode = "wb")
+    unzip(zip_dest, exdir = unzip_dir)
+  
+  # ── Read ADM2 and ADM3 shapefiles ──
+    all_files <- list.files(unzip_dir, recursive = TRUE, full.names = TRUE)
+    adm2_path <- all_files[grepl("adm2.*\\.shp$", all_files)]
+    adm3_path <- all_files[grepl("adm3.*\\.shp$", all_files)]
+    Haiti_adm2 <- st_read(adm2_path)
+    Haiti_adm3 <- st_read(adm3_path)    
+
+  # ── Separate the Coordinates column into Latitude and Longitude ──
+    Haiti_IR <- Haiti_IR %>%
+      separate(Coordinates, into = c("Latitude", "Longitude"), sep = ",\\s*", convert = TRUE)
+      
+    Haiti_IR_Samples <- Haiti_IR %>%
+      mutate(
+        bad_point = ( near(Longitude, -78.64742, tol = 1e-4) & near(Latitude, 24.46075, tol = 1e-4) ) |
+                    ( near(Longitude, -81.647417, tol = 1e-4) & near(Latitude, 27.46075, tol = 1e-4) ),
+        Longitude = if_else(bad_point, -72.387861, Longitude),
+        Latitude  = if_else(bad_point,  18.522583, Latitude)
+      ) %>%
+      dplyr::select(-bad_point)
+  
+    Haiti_IR_Samples_sf <- st_as_sf(Haiti_IR_Samples,
+                                    coords = c("Longitude","Latitude"),
+                                    crs = 4326)
+
+
+```
+
+
+
+```{r Create Figure 1}
+
+  # ── Identify the ADM2 polygons (communes) that contain sample points ──
+    adm2_flagged <- Haiti_adm2[
+      lengths(st_intersects(Haiti_adm2, Haiti_IR_Samples_sf)) > 0,
+    ]
+
+  # ── Plot all communes in light grey  ──
+    Haiti_StudySiteCommunes <- ggplot() +
+      # all communes (ADM2) in light grey
+      geom_sf(
+        data  = Haiti_adm2,
+        fill  = "white",
+        color = "grey",
+        size  = 0.05
+      ) +
+      # communes intersecting sample points
+      geom_sf(
+        data  = adm2_flagged,
+        fill  = "grey",
+        color = "black",
+        size  = 0.05
+      ) +
+      theme_minimal() +
+      labs(
+        title = "",
+        x     = "",
+        y     = ""
+      )
+    
+  # ── Plot the study sites alone  ──    
+    Haiti_StudySite <- ggplot() +
+            geom_sf(
+        data  = adm2_flagged,
+        fill  = "white",
+        color = "black",
+        size  = 0.05
+      ) +
+      theme_minimal()
+
+  # ── Print the figures  ──       
+    print(Haiti_StudySiteCommunes)
+    print(Haiti_StudySite)
+
+  # ----- Maps can be exported to image editing software (PowerPoint, Inkscape) ----- 
+  # ----- to add additional features such as titles, descriptors, etc.          ----- 
+```
+
+
+
+```{r Create Figure 2}
+
+  # ── Swap data format for ease of creating figures  ──     
+  Haiti_IR %>%
+    pivot_longer(
+      cols      = c(`1016I qPCR`, `989 qPCR`, `1534 qPCR`,
+                    `989 NGS`,  `1534 NGS`,  `1016 NGS`),
+      names_to  = "Assay",
+      values_to = "Genotype"
+    ) %>%
+    count(Assay, Genotype, name = "Count") %>%
+    arrange(Assay, desc(Count))
+
+  # ── Pivot and recode genotypes, then count & compute percentages── 
+    df_long2 <- Haiti_IR %>%
+      pivot_longer(
+        cols      = c(`1016I qPCR`, `989 qPCR`, `1534 qPCR`,
+                      `989 NGS`,  `1534 NGS`,  `1016 NGS`),
+        names_to  = "Assay",
+        values_to = "Genotype"
+      ) %>%
+      mutate(
+        Genotype = if_else(Genotype %in% c("S/S","S/R","R/R"), Genotype, "Unknown")
+      ) %>%
+      count(`Manifest Collection Location`, Assay, Genotype, name = "Count") %>%
+      group_by(`Manifest Collection Location`, Assay) %>%
+      mutate(
+        Perc  = Count / sum(Count) * 100,
+        label = paste0(Count, " (", round(Perc, 1), "%)")
+      ) %>%
+      ungroup() %>%
+      # ensure all four categories appear in the legend
+      mutate(
+        Genotype = factor(Genotype,
+                          levels = c("S/S","S/R","R/R","Unknown"))
+      )
+
+  # ── Define maroon‐based colors (including grey for Unknown) ── 
+    cols <- c(
+      "S/S"     = "maroon1",
+      "S/R"     = "maroon3",
+      "R/R"     = "maroon4",
+      "Unknown" = "grey80"
+    )
+
+  # ── Loop over each site × assay and plot standalone pies ── 
+    unique_combos <- df_long2 %>%
+      distinct(`Manifest Collection Location`, Assay)
+
+    for(i in seq_len(nrow(unique_combos))) {
+      loc <- unique_combos$`Manifest Collection Location`[i]
+      asy <- unique_combos$Assay[i]
+      
+      df_sub <- df_long2 %>%
+        filter(`Manifest Collection Location` == loc,
+               Assay == asy)
+      
+      p <- ggplot(df_sub, aes(x = "", y = Count, fill = Genotype)) +
+        geom_col(color = "white", width = 1) +
+        coord_polar(theta = "y") +
+        geom_text(aes(label = label),
+                  position = position_stack(vjust = 0.5),
+                  size = 3) +
+        scale_fill_manual(values = cols, drop = FALSE) +
+        theme_void() +
+        theme(
+          legend.position = "bottom",
+          plot.title     = element_text(hjust = 0.5)
+        ) +
+        labs(
+          title = paste(loc, "|", asy),
+          fill  = "Genotype"
+        )
+  
+    print(p)}
+    
+  # ----- Export the pies w/ useful info to image editing software -----
+  # ----- Create the map by overlaying the pies at the coordinates ----- 
+```
+
+
+
+```{r Create Figure 3a}
+
+# ── Step 1: reshape and assign allele counts ──
+allele_df <- Haiti_IR %>%
+  mutate(CollectionDate = as.Date(`Collection Date`)) %>%
+  pivot_longer(
+    cols = c(`1016I qPCR`, `989 qPCR`, `1534 qPCR`),
+    names_to = "Assay",
+    values_to = "Genotype"
+  ) %>%
+  mutate(
+    Month = floor_date(CollectionDate, "month"),
+    S_alleles = case_when(
+      Genotype == "S/S" ~ 2,
+      Genotype == "S/R" ~ 1,
+      Genotype == "R/R" ~ 0,
+      TRUE              ~ NA_real_
+    ),
+    R_alleles = case_when(
+      Genotype == "S/S" ~ 0,
+      Genotype == "S/R" ~ 1,
+      Genotype == "R/R" ~ 2,
+      TRUE              ~ NA_real_
+    )
+  )
+
+# ── Step 2: summarise by month and assay ──
+allele_summary <- allele_df %>%
+  filter(!is.na(S_alleles) & !is.na(R_alleles)) %>%
+  group_by(Assay, Month) %>%
+  summarise(
+    S_total = sum(S_alleles),
+    R_total = sum(R_alleles),
+    N_total = S_total + R_total,
+    pct_R   = R_total / N_total * 100,
+    .groups = "drop"
+  ) %>%
+  mutate(pct_label = sprintf("%.1f%%", pct_R))
+
+# ── Step 3.1: Build count label layer ──
+allele_counts <- allele_summary %>%
+  group_by(Month) %>%
+  summarise(n_total = unique(N_total), .groups = "drop") %>%
+  mutate(y_pos = -5)  # position for count labels below axis
+
+# ── Step 3.2: Add point size + count labels ──
+AllelePlot <- ggplot(allele_summary, aes(x = Month, y = pct_R, colour = Assay)) +
+  geom_line(size = 1) +
+  geom_point(aes(size = N_total), shape = 16) +  # sized by total allele count
+  geom_text(
+    aes(label = pct_label),
+    vjust = -0.7,
+    size = 3,
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = allele_counts,
+    aes(x = Month, y = y_pos, label = n_total),
+    colour = "black",
+    size = 3
+  ) +
+  scale_color_manual(values = cols) +
+  scale_size_continuous(name = "Alleles sampled") +
+  scale_y_continuous(
+    labels = percent_format(scale = 1),
+    limits = c(-10, 105)
+  ) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "2 months") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
+  ) +
+  labs(
+    title  = "% Resistant Alleles (R) by qPCR Assay",
+    x      = "Month",
+    y      = "Percent Resistant Alleles",
+    colour = "Assay"
+  )
+
+print(AllelePlot)
+```
+
+
+
+```{r Create Figure 3B}
+
+  # ── Step 1: summarise R/R counts for 1016I and 1534 only ──
+    rr_summary <- allele_df %>%
+      filter(Assay %in% c("1016I qPCR", "1534 qPCR")) %>%  # drop 989
+      filter(!is.na(Genotype)) %>%
+      group_by(Assay, Month) %>%
+      summarise(
+        rr_count = sum(Genotype == "R/R"),
+        n_total  = n(),
+        pct_rr   = rr_count / n_total * 100,
+        .groups = "drop"
+      ) %>%
+      mutate(
+        pct_label = sprintf("%.1f%% (n=%d)", pct_rr, n_total)  # label with n inline
+      )
+  
+  # ── Define output folder ──
+    output_folder <- "C:/Users/ianpsheasmith/OneDrive - University of Florida/Documents - Haiti Vector/General/Figures/IR"
+  
+  # ── Step 2: base plot without labels ──
+    RRPlot_base <- ggplot(rr_summary, aes(x = Month, y = pct_rr, colour = Assay)) +
+      geom_line(size = 1) +
+      geom_point(aes(size = n_total), shape = 16) +
+      scale_color_manual(values = cols) +
+      scale_size_continuous(name = "Samples genotyped") +
+      scale_y_continuous(labels = percent_format(scale = 1), limits = c(-10, 105)) +
+      scale_x_date(date_labels = "%b %Y", date_breaks = "2 months") +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom"
+      ) +
+      labs(
+        title = "% R/R Genotypes (Homozygous Resistant) by qPCR Assay",
+        x     = "Month",
+        y     = "Percent R/R Genotypes",
+        colour= "Assay"
+      )
+
+  print(RRPlot_base)
+```
+
+
+
+```{r Test Change Across Time using Fisher's exact test & logistic regression}
+
+  ### ----- Create Dataset formatted to test temporal change ----- 
+    rr_summary <- allele_df %>%
+      filter(Assay %in% c("1016I qPCR", "1534 qPCR")) %>%  # drop 989
+      filter(!is.na(Genotype)) %>%
+      group_by(Assay, Month) %>%
+      summarise(
+        rr_count = sum(Genotype == "R/R"),
+        n_total  = n(),
+        pct_rr   = rr_count / n_total * 100,
+        .groups = "drop"
+      ) %>%
+      mutate(
+        pct_label = sprintf("%.1f%% (n=%d)", pct_rr, n_total)  # label with n inline
+      )
+
+  ## ──  Testing for changes in homozygosity across time ── 
+    # Compute non-RR counts
+      fisher_matrix_1016I <- rr_summary %>%
+        filter(Assay == "1016I qPCR") %>%
+        mutate(non_rr_count = n_total - rr_count) %>%
+        dplyr::select(rr_count, non_rr_count) %>%
+        as.matrix() %>%
+        t()  # transpose → rows = R/R, non-R/R; cols = months
+    
+    # Add row and column names
+      rownames(fisher_matrix_1016I) <- c("R/R", "Non-R/R")
+      colnames(fisher_matrix_1016I) <- format(
+        rr_summary$Month[rr_summary$Assay == "1016I qPCR"], "%b %Y"
+      )
+    
+    # View table
+      print(fisher_matrix_1016I)
+    # Use simulate.p.value = TRUE because of table size
+      set.seed(1999)
+      fisher.test(fisher_matrix_1016I, simulate.p.value = TRUE, B = 1e6)
+    
+    # Compute non-RR counts
+      fisher_matrix_1534 <- rr_summary %>%
+        filter(Assay == "1534 qPCR") %>%
+        mutate(non_rr_count = n_total - rr_count) %>%
+        dplyr::select(rr_count, non_rr_count) %>%
+        as.matrix() %>%
+        t()  # transpose → rows = R/R, non-R/R; cols = months
+    
+    # Add row and column names
+      rownames(fisher_matrix_1534) <- c("R/R", "Non-R/R")
+      colnames(fisher_matrix_1534) <- format(
+        rr_summary$Month[rr_summary$Assay == "1534 qPCR"], "%b %Y"
+      )
+    
+    # View matrix
+      print(fisher_matrix_1534)
+      set.seed(1999)
+      fisher.test(fisher_matrix_1534, simulate.p.value = TRUE, B = 1e6)
+    
+    # Generate Logistic Regression Model# Generate LogistTRUEic Regression Model
+      glm_trend_1016I <- glm(cbind(rr_count, n_total - rr_count) ~ as.numeric(Month), family = binomial, data = rr_summary %>% filter(Assay == "1016I qPCR"))
+      summary(glm_trend_1016I)
+    
+    # Generate Logistic Regression Model# Generate LogistTRUEic Regression Model
+      glm_trend_1534 <- glm(cbind(rr_count, n_total - rr_count) ~ as.numeric(Month), family = binomial, data = rr_summary %>% filter(Assay == "1534 qPCR"))      
+      summary(glm_trend_1534)
+      
+      
+  # Build GLM model for R allele proportion over time
+    glm_allele_1016I <- glm(
+      cbind(R_total, S_total) ~ as.numeric(Month),
+      family = binomial,
+      data = allele_summary %>% filter(Assay == "1016I qPCR")
+    )
+    summary(glm_allele_1016I)
+  
+  # Repeat for 1534
+  glm_allele_1534 <- glm(
+    cbind(R_total, S_total) ~ as.numeric(Month),
+    family = binomial,
+    data = allele_summary %>% filter(Assay == "1534 qPCR")
+  )
+  summary(glm_allele_1534)      
+
+```
+
+
+
+```{r Fisher's exact test for Table 3}
+
+  # ---- Build matrix for V1016I ----
+    V1016I_matrix <- matrix(c(
+      5, 2, 0,   # Darbonne
+      43, 5, 1,   # Janjan
+      116, 43, 3, # La Salle
+      142, 54, 7  # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("RR", "RS", "SS")
+    ))
+  
+    # Fisher's exact test 
+      FT_V1016I <- fisher.test(V1016I_matrix, simulate.p.value = FALSE, B = 1e6)  
+      print(FT_V1016I)
+  
+  # ---- Build matrix for F1534C ----
+    F1534C_matrix <- matrix(c(
+      7, 0, 0,   # Darbonne
+      48, 1, 0,   # Janjan
+      158, 4, 0, # La Salle
+      197, 6, 0  # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("RR", "RS", "SS")
+    ))
+  
+    # Fisher's exact test 
+      FT_F1534C <- fisher.test(F1534C_matrix, simulate.p.value = FALSE, B = 1e6)  
+      print(FT_F1534C)
+    
+    
+```
+
+
+
+```{r Fisher's exact test for Table 4}
+
+  # ---- Build matrix for V1016I NGS
+    V1016I_matrix_NGS <- matrix(c(
+      4, 2,   # Darbonne
+      34, 10,   # Janjan
+      38, 10, # La Salle
+      76, 22  # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("RR", "RS")
+    ))
+  
+  # Fisher's exact test 
+    FT_V1016I_NGS <- fisher.test(V1016I_matrix_NGS, simulate.p.value = FALSE, B = 1e6)  
+    print(FT_V1016I_NGS)
+  
+    
+    
+  # ---- Build matrix for F1534C NGS
+    F1534C_matrix_NGS <- matrix(c(
+      7, 0,   # Darbonne
+      43, 1,   # Janjan
+      52, 1, # La Salle
+      102, 2  # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("RR", "RS")
+    ))
+  
+  # Fisher's exact test 
+    FT_F1534C_NGS <- fisher.test(F1534C_matrix_NGS, simulate.p.value = FALSE, B = 1e6)  
+    print(FT_F1534C_NGS)
+    
+    
+```
+
+
+
+```{r Fisher's exact test for Tables 5 & 6}
+
+  # ----  Build matrix for 1015I ---- 
+    allele_matrix <- matrix(c(
+      12, 2,   # Darbonne
+      91, 7,   # Janjan
+      275, 49, # La Salle
+      338, 68  # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("Resistant", "Susceptible")
+    ))
+  
+    # Fisher's exact test
+      fisher.test(allele_matrix)
+
+
+  # ---- Build matrix for 1534 ---- 
+    allele_matrix2 <- matrix(c(
+      14, 0,   # Darbonne
+      97, 1,   # Janjan
+      320, 4, # La Salle
+      400, 6  # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("Resistant", "Susceptible")
+    ))
+  
+    # Fisher's exact test
+      fisher.test(allele_matrix2)
+
+
+
+
+  # ---- Matrix for 1016I NGS concordance
+    allele_matrix_3 <- matrix(c(
+      11, 2,   # Darbonne
+      78, 10,  # Janjan
+      90, 16,  # La Salle
+      180, 28  # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("Resistant", "Susceptible")
+    ))
+  
+    # Fisher's exact test
+      fisher.test(allele_matrix_3)
+
+
+  # ---- Matrix for 1534 NGS concordance
+    allele_matrix_4 <- matrix(c(
+      14, 0,   # Darbonne
+      87, 1,   # Janjan
+      103, 1,  # La Salle
+      206, 2    # Ti Cousin
+    ), nrow = 4, byrow = TRUE,
+    dimnames = list(
+      c("Darbonne", "Janjan", "La Salle", "Ti Cousin"),
+      c("Resistant", "Susceptible")
+    ))
+  
+    #  Fisher's exact test
+      fisher.test(allele_matrix_4)
+```
+
+
