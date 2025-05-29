@@ -25,6 +25,11 @@ In the Haiti_IR.csv file:
 - `XXX NGS`: The result of each NGS assay
 - `Picture`: Whether or not a picture was obtained of the assay
 
+In the Shapefiles folder:
+- `hti_admbnda_adm1_cnigs_20181129`: Shapefile of Haiti
+- `hti_admbnda_adm2_cnigs_20181129`: Shapefile of Haiti with administrative level 2 boundaries
+- `hti_admbnda_adm3_cnigs_20181129`: Shapefile of Haiti with administrative level 3 boundaries
+- `Key`: Text document describing the attributes of the Haiti shapefiles
 
 ## Usage Instructions
 
