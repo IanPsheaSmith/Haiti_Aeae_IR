@@ -45,6 +45,8 @@ output: html_document
   # ── Separate the Coordinates column into Latitude and Longitude ──
     Haiti_IR <- Haiti_IR %>%
       separate(Coordinates, into = c("Latitude", "Longitude"), sep = ",\\s*", convert = TRUE)
+    
+  # ── Remove data point with suspect date ──  
       
     Haiti_IR_Samples <- Haiti_IR %>%
       mutate(
@@ -59,7 +61,7 @@ output: html_document
                                     coords = c("Longitude","Latitude"),
                                     crs = 4326)
 
-
+    
 ```
 
 
@@ -198,9 +200,14 @@ output: html_document
 
 ```{r Create Figure 3a}
 
+# ── Filter out observation with inaccurate date ──
+
+    Haiti_IR <- Haiti_IR[Haiti_IR$`Collection Date` != "2019-12-04", ]
+
+
 # ── Step 1: reshape and assign allele counts ──
 allele_df <- Haiti_IR %>%
-  mutate(CollectionDate = as.Date(`Collection Date`)) %>%
+  mutate(CollectionDate = mdy(`Collection Date`)) %>%  # Use lubridate's mdy()
   pivot_longer(
     cols = c(`1016I qPCR`, `989 qPCR`, `1534 qPCR`),
     names_to = "Assay",
@@ -383,31 +390,38 @@ print(AllelePlot)
       set.seed(1999)
       fisher.test(fisher_matrix_1534, simulate.p.value = TRUE, B = 1e6)
     
-    # Generate Logistic Regression Model# Generate LogistTRUEic Regression Model
-      glm_trend_1016I <- glm(cbind(rr_count, n_total - rr_count) ~ as.numeric(Month), family = binomial, data = rr_summary %>% filter(Assay == "1016I qPCR"))
+    # Generate Logistic Regression Model
+
+    # Add sequential month number
+      rr_summary <- rr_summary %>%
+        arrange(Month) %>%
+        mutate(Month_seq = as.numeric(factor(Month)))  
+      allele_summary <- allele_summary %>%
+        arrange(Month) %>%
+      mutate(Month_seq = as.numeric(factor(Month)))
+      
+      glm_trend_1016I <- glm(cbind(rr_count, n_total - rr_count) ~ Month_seq, family = binomial, data = rr_summary %>% filter(Assay == "1016I qPCR"))
       summary(glm_trend_1016I)
     
-    # Generate Logistic Regression Model# Generate LogistTRUEic Regression Model
-      glm_trend_1534 <- glm(cbind(rr_count, n_total - rr_count) ~ as.numeric(Month), family = binomial, data = rr_summary %>% filter(Assay == "1534 qPCR"))      
+      glm_trend_1534 <- glm(cbind(rr_count, n_total - rr_count) ~ Month_seq, family = binomial, data = rr_summary %>% filter(Assay == "1534 qPCR"))      
       summary(glm_trend_1534)
       
       
   # Build GLM model for R allele proportion over time
-    glm_allele_1016I <- glm(
-      cbind(R_total, S_total) ~ as.numeric(Month),
-      family = binomial,
-      data = allele_summary %>% filter(Assay == "1016I qPCR")
-    )
-    summary(glm_allele_1016I)
+  glm_allele_1016I <- glm(
+    cbind(R_total, S_total) ~ Month_seq,
+    family = binomial,
+    data = allele_summary %>% filter(Assay == "1016I qPCR")
+  )
+  summary(glm_allele_1016I)
   
   # Repeat for 1534
   glm_allele_1534 <- glm(
-    cbind(R_total, S_total) ~ as.numeric(Month),
+    cbind(R_total, S_total) ~ Month_seq,
     family = binomial,
     data = allele_summary %>% filter(Assay == "1534 qPCR")
   )
-  summary(glm_allele_1534)      
-
+  summary(glm_allele_1534)
 ```
 
 
